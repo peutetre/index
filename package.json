@@ -1,0 +1,23 @@
+{
+  "name": "index",
+  "version": "1.0.0",
+  "description": "index your pages with Google Index API and IndexNow",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/peutetre/index.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/peutetre/index/issues"
+  },
+  "homepage": "https://github.com/peutetre/index#readme",
+  "dependencies": {
+    "googleapis": "^137.1.0",
+    "xml2js": "^0.6.2"
+  }
+}

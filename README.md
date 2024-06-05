@@ -33,6 +33,6 @@ create `bing.json`
 
 
 ```
-node index.js sitemap.xml --google --bing
+node index.js https://mysite.com/sitemap.xml --google --bing
 ```
 

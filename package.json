@@ -1,6 +1,6 @@
 {
   "name": "index",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "index your pages with Google Index API and IndexNow",
   "main": "index.js",
   "scripts": {

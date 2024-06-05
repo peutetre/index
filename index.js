@@ -14,25 +14,30 @@ const options = {
   'sitemap': { type: 'string' },
 };
 
-
 const { values, tokens } = parseArgs({ options, tokens: true });
-
 
 tokens.filter((token) => token.kind === 'option')
   .forEach((token) => {
     values[token.name] = token.value ?? true;
   });
 
-
-const sitemap = values.sitemap ?? 'sitemap.xml';
+const sitemap = values.sitemap ?? null;
 const google = values.google ?? false;
 const bing = values.bing ?? false;
 
 
 function parseSitemap(s) {
-  var parser = new xml2js.Parser();
-  return fs.readFile(s, { encoding: 'utf8' }).then(function (data) {
-    return parser.parseStringPromise(data).then(function (result) {
+  return fetch(s, {
+    method: "GET"
+  }).then((res) => {
+    if(res.status != 200) {
+      return Promise.reject(`Failed to fetch sitemap`);
+    } else {
+      return Promise.resolve(res.text());
+    }
+  }).then(function (txt) {
+    var parser = new xml2js.Parser();
+    return parser.parseStringPromise(txt).then(function (result) {
       return result.urlset.url.map(url => url.loc[0]);
     });
   });

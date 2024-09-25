@@ -1,11 +1,9 @@
-/*
- * index.js
- */
-
 const fs = require('node:fs/promises');
 const xml2js = require('xml2js');
 const { parseArgs } = require('node:util');
 var googleapis = require("googleapis");
+const { promisify } = require('util');
+const sleep = promisify(setTimeout);
 
 
 const options = {
@@ -29,8 +27,6 @@ const bing = values.bing ?? false;
 const debug = values.debug ?? false;  // New debug flag
 const batchSize = parseInt(values.batchSize ?? "100", 10);  // Default batch size is 100
 
-
-
 function parseSitemap(s) {
   return fetch(s, {
     method: "GET"
@@ -48,7 +44,6 @@ function parseSitemap(s) {
   });
 }
 
-
 function submitToBing(urls, key, keyloc) {
   var host = (new URL(urls[0])).origin;
   var data = {
@@ -65,7 +60,7 @@ function submitToBing(urls, key, keyloc) {
   }).then((res) => {
     if(res.status != 200) {
       console.log(res.text())
-      return reject(`Failed to index on bing`);
+      return Promise.reject(`Failed to index on bing`);
     } else {
       console.log(`bing indexed ✔️ `);
       return Promise.resolve();
@@ -74,7 +69,8 @@ function submitToBing(urls, key, keyloc) {
 }
 
 
-function submitToGoogle(urls, client_email, private_key) {
+
+async function submitToGoogle(urls, client_email, private_key) {
   const jwtClient = new googleapis.google.auth.JWT(
     client_email,
     null,
@@ -83,77 +79,73 @@ function submitToGoogle(urls, client_email, private_key) {
     null
   );
 
-  return new Promise(function (resolve, reject) {
-    jwtClient.authorize(function (err, tokens) {
-      if (err) {
-        console.error("Authentication error:", err);
-        return reject(err);
+  const authorize = promisify(jwtClient.authorize).bind(jwtClient);
+
+  try {
+    const tokens = await authorize();
+    console.log("Authentication successful. Access token acquired.");
+
+    const indexing = googleapis.google.indexing({
+      version: 'v3',
+      auth: jwtClient
+    });
+
+    const processBatch = async (batch) => {
+      const body = {
+        requests: batch.map(url => ({
+          url: url,
+          type: "URL_UPDATED"
+        }))
+      };
+
+      if (debug) {
+        console.log('Batch submission request body:', body);
+      } 
+      try {
+        const response = await indexing.urlNotifications.publish({
+          requestBody: body
+        });
+
+        if (debug) {
+          console.log('Batch submission response:', response.data);
+        } else {
+          console.log(`Successfully submitted batch of ${batch.length} URLs`);
+        }
+
+        // Check for partial errors
+        if (response.data.urlNotificationMetadata) {
+          for (const [url, metadata] of Object.entries(response.data.urlNotificationMetadata)) {
+            if (metadata.latestUpdate && metadata.latestUpdate.type === 'URL_NOTIFICATION_ERROR') {
+              console.error(`Error submitting URL ${url}:`, metadata.latestUpdate.error);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error submitting batch:', error.message);
+        if (error.response) {
+          console.error('Error details:', error.response.data);
+        }
       }
 
-      console.log("Authentication successful. Access token acquired.");
+      // Add a delay between batches to respect rate limits
+      await sleep(1000);
+    };
 
-      const processBatch = async (batch) => {
-        const body = {
-          urls: batch.map(url => ({
-            type: "URL_UPDATED",
-            url: url
-          }))
-        };
+    const processAllBatches = async () => {
+      for (let i = 0; i < urls.length; i += batchSize) {
+        const batch = urls.slice(i, i + batchSize);
+        console.log(`Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(urls.length / batchSize)}`);
+        await processBatch(batch);
+      }
+    };
 
-        try {
-          // Using the correct API endpoint
-          const res = await fetch('https://indexing.googleapis.com/v3/urlNotifications:publish', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + tokens.access_token
-            },
-            body: JSON.stringify(body)
-          });
-
-          const contentType = res.headers.get("content-type");
-          if (contentType && contentType.indexOf("application/json") !== -1) {
-            const responseData = await res.json();
-            if (res.status !== 200) {
-              console.error(`Failed to index batch. Status: ${res.status}, Response:`, responseData);
-            } else {
-              if (debug) {
-                console.log(`Batch submission response:`, responseData);
-              } else {
-                console.log(`Successfully submitted batch of ${batch.length} URLs`);
-              }
-            }
-          } else {
-            const textResponse = await res.text();
-            console.error(`Received non-JSON response. Status: ${res.status}, Content-Type: ${contentType}`);
-            console.error(`Response body (first 500 characters):`);
-            console.error(textResponse.substring(0, 500));
-          }
-        } catch (error) {
-          console.error(`Error indexing batch:`, error);
-          if (error.response) {
-            console.error(`Response status:`, error.response.status);
-            console.error(`Response headers:`, error.response.headers);
-          }
-        }
-
-        // Add a small delay between batches to avoid hitting rate limits
-        await new Promise(r => setTimeout(r, 1000));
-      };
-
-      const processAllBatches = async () => {
-        for (let i = 0; i < urls.length; i += batchSize) {
-          const batch = urls.slice(i, i + batchSize);
-          await processBatch(batch);
-          console.log(`Processed batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(urls.length / batchSize)}`);
-        }
-      };
-
-      processAllBatches()
-        .then(() => resolve(urls))
-        .catch(reject);
-    });
-  });
+    await processAllBatches();
+    console.log("All URLs processed.");
+    return urls;
+  } catch (err) {
+    console.error("Error in submitToGoogle:", err);
+    throw err;
+  }
 }
 
 
@@ -161,7 +153,6 @@ function show(urls) {
   console.log(`${urls.length} elements`);
   return Promise.resolve(urls);
 }
-
 
 parseSitemap(sitemap).then(show).then(function (locs) {
   if(bing) {

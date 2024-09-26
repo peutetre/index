@@ -4,7 +4,7 @@ const { parseArgs } = require('node:util');
 var googleapis = require("googleapis");
 const { promisify } = require('util');
 const sleep = promisify(setTimeout);
-
+const crypto = require('crypto');
 
 const options = {
   'google': { type: 'boolean' },
@@ -71,81 +71,78 @@ function submitToBing(urls, key, keyloc) {
 
 
 async function submitToGoogle(urls, client_email, private_key) {
-  const jwtClient = new googleapis.google.auth.JWT(
+  const auth = new googleapis.google.auth.JWT(
     client_email,
     null,
     private_key,
-    ["https://www.googleapis.com/auth/indexing"],
+    ['https://www.googleapis.com/auth/indexing'],
     null
   );
 
-  const authorize = promisify(jwtClient.authorize).bind(jwtClient);
-
+  console.log("Attempting to authenticate...");
   try {
-    const tokens = await authorize();
-    console.log("Authentication successful. Access token acquired.");
-
-    const indexing = googleapis.google.indexing({
-      version: 'v3',
-      auth: jwtClient
-    });
-
-    const processBatch = async (batch) => {
-      const body = {
-        requests: batch.map(url => ({
-          url: url,
-          type: "URL_UPDATED"
-        }))
-      };
-
-      if (debug) {
-        console.log('Batch submission request body:', body);
-      } 
-      try {
-        const response = await indexing.urlNotifications.publish({
-          requestBody: body
-        });
-
-        if (debug) {
-          console.log('Batch submission response:', response.data);
-        } else {
-          console.log(`Successfully submitted batch of ${batch.length} URLs`);
-        }
-
-        // Check for partial errors
-        if (response.data.urlNotificationMetadata) {
-          for (const [url, metadata] of Object.entries(response.data.urlNotificationMetadata)) {
-            if (metadata.latestUpdate && metadata.latestUpdate.type === 'URL_NOTIFICATION_ERROR') {
-              console.error(`Error submitting URL ${url}:`, metadata.latestUpdate.error);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error submitting batch:', error.message);
-        if (error.response) {
-          console.error('Error details:', error.response.data);
-        }
-      }
-
-      // Add a delay between batches to respect rate limits
-      await sleep(1000);
-    };
-
-    const processAllBatches = async () => {
-      for (let i = 0; i < urls.length; i += batchSize) {
-        const batch = urls.slice(i, i + batchSize);
-        console.log(`Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(urls.length / batchSize)}`);
-        await processBatch(batch);
-      }
-    };
-
-    await processAllBatches();
-    console.log("All URLs processed.");
-    return urls;
-  } catch (err) {
-    console.error("Error in submitToGoogle:", err);
-    throw err;
+    await auth.authorize();
+    console.log("Authentication successful.");
+  } catch (error) {
+    console.error("Authentication failed:", error);
+    throw error;
   }
+
+  const submitBatch = async (batch) => {
+    const boundary = '===============' + crypto.randomBytes(8).toString('hex') + '==';
+    const body = batch.map((url, index) => `
+--${boundary}
+Content-Type: application/http
+Content-Transfer-Encoding: binary
+Content-ID: <item${index + 1}>
+
+POST /v3/urlNotifications:publish
+Content-Type: application/json
+accept: application/json
+
+{"url":"${url}","type":"URL_UPDATED"}
+`).join('\n') + `\n--${boundary}--`;
+
+    try {
+      const response = await fetch('https://indexing.googleapis.com/batch', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${auth.credentials.access_token}`,
+          'Content-Type': `multipart/mixed; boundary=${boundary}`
+        },
+        body: body
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
+      }
+
+      const responseText = await response.text();
+      if (debug) {
+        console.log('Batch response:', responseText);
+      }
+
+      const successCount = (responseText.match(/HTTP\/1\.1 200 OK/g) || []).length;
+      console.log(`Successfully submitted ${successCount}/${batch.length} URLs`);
+    } catch (error) {
+      console.error(`Error submitting batch:`, error.message);
+    }
+
+    // Add a delay between batches to avoid hitting rate limits
+    await new Promise(r => setTimeout(r, 1000));  // 1 second delay, adjust as needed
+  };
+
+  const processAllBatches = async () => {
+    for (let i = 0; i < urls.length; i += batchSize) {
+      const batch = urls.slice(i, i + batchSize);
+      await submitBatch(batch);
+      console.log(`Processed batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(urls.length / batchSize)}`);
+    }
+  };
+
+  await processAllBatches();
+  return urls;
 }
 
 
